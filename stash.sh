@@ -10,11 +10,11 @@ show_help() {
 Command Stash Utility
 Usage:
   stash                  - stash the last command
-  stash head -N          - stash last N commands
-  stash tail -N          - stash first N commands of session
+  stash head N           - stash last N commands
+  stash tail N           - stash first N commands of session
   stash history N        - stash history line N
   stash find "text"      - search stashed commands
-  stash recall N         - execute Nth command from last search
+  stash recall N         - execute line N from stash file
   stash list             - list stashed commands
   stash clear            - clear stash
   stash help             - show help
@@ -40,10 +40,22 @@ stash_command() {
         return 1
     fi
 
+    # Check for duplicates
+    if [[ -f "$STASH_FILE" ]]; then
+        # Extract just the command part from each line and compare
+        if awk -F'] ' '{print $2}' "$STASH_FILE" | grep -Fxq "$cmd"; then
+            echo "Command already stashed: $cmd"
+            return 0
+        fi
+    fi
+
     mkdir -p "$(dirname "$STASH_FILE")"
     local entry=$(add_timestamp "$cmd")
     echo "$entry" >> "$STASH_FILE"
-    echo "Stashed: $cmd"
+    
+    # Get the line number of the newly added command
+    local line_num=$(wc -l < "$STASH_FILE" 2>/dev/null || echo "0")
+    echo "Stashed: $cmd (line $line_num)"
 }
 
 get_last_command() {
@@ -80,27 +92,27 @@ get_history_line() {
 
 find_commands() {
     local pattern="$1"
-    local temp_results="/tmp/.stash_search_$$"
 
     [[ ! -f "$STASH_FILE" ]] && echo "No stash file." && return 1
 
-    grep -i "$pattern" "$STASH_FILE" | tail -5 > "$temp_results"
-    echo "$temp_results" > /tmp/.stash_last_search
-
-    echo "Last 5 matching commands:"
-    nl -w1 -s") " "$temp_results"
+    echo "Commands matching '$pattern':"
+    grep -ni "$pattern" "$STASH_FILE" | while IFS=: read -r line_num content; do
+        echo "$line_num) $content"
+    done
 
     local count=$(grep -ic "$pattern" "$STASH_FILE")
-    [[ $count -gt 5 ]] && echo "... and $((count - 5)) more matches"
+    echo "Found $count matching commands"
 }
 
 recall_command() {
-    local num="$1"
-    local file=$(cat /tmp/.stash_last_search 2>/dev/null)
-    [[ ! -f "$file" ]] && echo "Run 'stash find' first." && return 1
-    local cmd=$(sed -n "${num}p" "$file" | sed 's/^\[[^]]*\] //')
-    [[ -z "$cmd" ]] && echo "Invalid selection." && return 1
-    echo "Executing: $cmd"
+    local line_num="$1"
+    
+    [[ ! -f "$STASH_FILE" ]] && echo "No stash file." && return 1
+    
+    local cmd=$(sed -n "${line_num}p" "$STASH_FILE" | sed 's/^\[[^]]*\] //')
+    [[ -z "$cmd" ]] && echo "Invalid line number: $line_num" && return 1
+    
+    echo "Executing line $line_num: $cmd"
     read -p "Press Enter to confirm..."
     eval "$cmd"
 }
@@ -121,10 +133,22 @@ case "$1" in
         stash_command "$cmd"
         ;;
     head)
-        [[ "$2" =~ ^-[0-9]+$ ]] && get_head_commands ${2#-} | while read -r c; do stash_command "$c"; done || echo "Usage: stash head -N"
+        if [[ "$2" =~ ^[0-9]+$ ]]; then
+            get_head_commands "$2" | while read -r c; do 
+                [[ -n "$c" ]] && stash_command "$c"
+            done
+        else
+            echo "Usage: stash head N (where N is a number)"
+        fi
         ;;
     tail)
-        [[ "$2" =~ ^-[0-9]+$ ]] && get_tail_commands ${2#-} | while read -r c; do stash_command "$c"; done || echo "Usage: stash tail -N"
+        if [[ "$2" =~ ^[0-9]+$ ]]; then
+            get_tail_commands "$2" | while read -r c; do 
+                [[ -n "$c" ]] && stash_command "$c"
+            done
+        else
+            echo "Usage: stash tail N (where N is a number)"
+        fi
         ;;
     history)
         [[ "$2" =~ ^[0-9]+$ ]] && stash_command "$(get_history_line "$2")" || echo "Usage: stash history N"
@@ -133,7 +157,7 @@ case "$1" in
         [[ -n "$2" ]] && find_commands "$2" || echo "Usage: stash find \"pattern\""
         ;;
     recall)
-        [[ "$2" =~ ^[0-9]+$ ]] && recall_command "$2" || echo "Usage: stash recall N"
+        [[ "$2" =~ ^[0-9]+$ ]] && recall_command "$2" || echo "Usage: stash recall N (where N is the line number)"
         ;;
     list)
         list_commands
